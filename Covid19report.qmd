@@ -1,0 +1,673 @@
+---
+title: "COVID-19 Pandemic 2019-2022 by the World Health Organization (WHO) and socio-economic indicators by the World Bank Development Indicators (WDI)"
+author: "Nanmanat Disayakamonpan"
+format:   
+  html:                     
+    standalone: true        # These are some YAML configurations which are not essential but you may play with:
+                            # standalone means that quarto renders to a html-file with a header 
+                            # and all css javascript needed
+    embed-resources: true   # The html will also embed all figures you produce 
+                            # (usually they would be in a directory). So differently from traditional html files
+                            # this html file would be self-contained. You could for example email it as one file 
+    code-fold: true         # We enable the code folding such that we only need to look at code if we want
+                            # More info at https://quarto.org/docs/output-formats/html-publishing.html
+    number-sections: true   # We number the sections
+    toc : true              # Table of contents make navigation in longer files easier
+---
+
+In this comprehensive analysis, we delve into the intricate dynamics of **the COVID-19 pandemic from 2019 to 2022**, leveraging two pivotal datasets: the daily records of new cases and COVID-19-related deaths collected by ***the World Health Organization (WHO)*** until September 30, 2022, and ***the World Bank Development Indicators (WDI)***, which encompass essential socio-economic metrics for countries across the globe.
+
+```{r}
+#| label: data
+#| message: false 
+#| echo: false
+# load packages
+library(tidyverse)
+library(scales)
+library(tidymodels)
+library(corrplot)
+library(knitr)
+library(kableExtra)
+library(correlation)
+
+# load data
+wdi <- read.csv("data/WDI.csv")
+who <- read.csv("data/WHO-COVID-19.csv")
+
+# Cumulative Case & Death Data
+who$Date_reported <- as.Date(who$Date_reported)
+selected_countries <- c("Germany", "Italy", "France", "The United Kingdom")
+cumulative_data <- who %>%
+  filter(Date_reported <= as.Date("2020-08-31"),
+         Country %in% selected_countries) %>% 
+  group_by(Country) %>%
+  arrange(Country, Date_reported) %>%
+  mutate(
+    Cumulative_cases = cumsum(New_cases),
+    Cumulative_deaths = cumsum(New_deaths)
+  ) %>% 
+  pivot_longer(
+    cols = c("Cumulative_cases", "Cumulative_deaths"),
+    names_to = "Type",
+    values_to = "Count"
+  )
+
+# Creating Smooth Data Function
+smooth3 <- function(x) (x + lag(x, n = 1, default = 0) + lag(x, n = 2, default = 0)) / 3
+
+smooth7 <- function(x) (x + lag(x, n = 1, default = 0) + lag(x, n = 2, default = 0) +
+                        lag(x, n = 3, default = 0) + lag(x, n = 4, default = 0) +
+                        lag(x, n = 5, default = 0) + lag(x, n = 6, default = 0) +
+                        lag(x, n = 7, default = 0)) / 7
+smooth10 <- function(x) (x + lag(x, n = 1, default = 0) + lag(x, n = 2, default = 0) +
+                         lag(x, n = 3, default = 0) + lag(x, n = 4, default = 0) +
+                         lag(x, n = 5, default = 0) + lag(x, n = 6, default = 0) +
+                         lag(x, n = 7, default = 0) + lag(x, n = 8, default = 0) +
+                         lag(x, n = 9, default = 0) + lag(x, n = 10, default = 0)) / 10
+
+# Create smooth_data
+smooth_data <- who %>%
+  group_by(Country) %>%
+  mutate(
+    New_cases_smooth3 = smooth3(New_cases),
+    New_cases_smooth7 = smooth7(New_cases),
+    New_cases_smooth10 = smooth10(New_cases),
+    New_deaths_smooth3 = smooth3(New_deaths),
+    New_deaths_smooth7 = smooth7(New_deaths),
+    New_deaths_smooth10 = smooth10(New_deaths)
+  )
+
+# Creatw shiftscale function
+shiftscale <- function(x, shift, scale) {
+  lagged_x <- lag(x, n = shift, default = 0)
+  scaled_x <- lagged_x * scale
+  return(scaled_x)
+}
+
+# Renaming variables for convenience
+colnames(wdi) <- c("country", "iso3c", "region", "urban_pop", "rural_pop", "pop_lower_half_median", "pop", "pop_older65", "pop_density", "physicians_per_1000", "life_expectancy", "gdp_per_capita")
+```
+
+# COVID-19 Time Evolution
+
+## Covid Cases and Deaths during the First Wave in Germany
+
+```{r}
+#| label: germany-firstwave
+#| echo: false
+who$Date_reported <- as.Date(who$Date_reported)
+
+germany_data <- who %>%
+  filter(Country == "Germany" & Date_reported < as.Date("2020-08-31")) %>% 
+  pivot_longer(cols = c("New_cases", "New_deaths"),
+               names_to = "Type",
+               values_to = "Count")
+
+ggplot(germany_data, aes(x = Date_reported, y = Count, color = Type)) +
+  geom_line() +
+  labs(title = "Daily COVID-19 Cases and Deaths in Germany (1st wave)",
+       x = "",
+       y = "Number of Cases/Deaths",
+       color = "Type") +
+  theme_minimal() +
+  scale_x_date(labels = scales::date_format("%b %y"), breaks = scales::breaks_width("1 month")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::label_comma())
+```
+
+```{r}
+#| label: germany-firstwave2
+#| echo: false
+result_table1 <- germany_data %>%
+  filter(Type %in% c("New_cases", "New_deaths"), !is.na(Date_reported)) %>%
+  group_by(Type) %>%
+  filter(Count == max(Count)) %>%
+  ungroup() %>%
+  select(Type, Date_reported, Count)
+
+result_table1 %>%
+  kable("html") %>%
+  kable_styling(full_width = FALSE) %>%
+  add_header_above(c(" ", "Max Count" = 2))
+```
+
+As you can see in the graph shown above, we can conclude that the COVID-19 wave in Germany started picking up speed in the mid of March 2020, peaked on April 3, 2020, and decreased since June 2020. At its highest point, there were 6,549 reported cases and 420 deaths. Fluctuations in reported cases can be explained by a few things. Changes in how testing is done play a role---more testing finds more cases, and less testing means fewer reported cases. Also, changes in public health rules, like lockdowns and social distancing, affect how the virus spreads and, in turn, impact reported case numbers. The ongoing vaccination efforts also add to the ups and downs, especially when a big part of the population becomes immune. All these factors together make the reported COVID-19 cases go up and down over time.
+
+## Cumulative Cases in Germany, Italy, France, and UK
+
+```{r}
+#| label: cumulativecases
+#| echo: false
+ggplot(cumulative_data, aes(x = Date_reported, y = Count, color = Country)) +
+  geom_line() +
+  facet_wrap(~Type, scales = "free_y", nrow = 2) +
+  labs(
+    title = "Cumulative COVID-19 Cases and Deaths",
+    x = "",
+    y = "Number of Cases/Deaths",
+    color = "Country") +
+  theme_minimal() +
+  scale_x_date(labels = scales::date_format("%b %y"), breaks = scales::breaks_width("1 month")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::label_comma())
+```
+
+As we look at the graph illustrating the pandemic situation in Germany, Italy, France, and the UK, it shows a steady rise in cumulative cases, reaching over 200,000 by September 2020. However, when we shift our focus to the impact on lives, a clear difference emerges. Italy, France, and the UK carry the heavy burden of more than 30,000 cumulative deaths, revealing the deep impact of the virus. In contrast, Germany stands out with fewer than 10,000 deaths, making it an exception in this narrative. This divergence emphasizes how various factors, like public health measures and healthcare systems, have shaped each country's unique experience in dealing with the unprecedented challenges posed by the pandemic.
+
+## Smoothing Daily Data
+
+At this stage, I use smoothing technique to remove noise or fluctuations from the data, providing a clearer trend or pattern. I generated the line plot to show the smoothed daily COVID-19 cases over time in Germany. As you can see, the x-axis represents the date, while the y-axis represents the number of smoothed cases. The different colors represent the different smoothing windows (blue for 3 days, green for 7 days, and red for 10 days). By comparing the line plots in different smoothing windows (3 days, 7 days, and 10 days), we can observe how the choice of smoothing window affects the representation of the daily cases trend. Smaller windows may capture short-term fluctuations, while larger windows may reveal long-term trends.
+
+```{r}
+#| label: smoothingdailydata-germany
+#| echo: false
+smooth_data1 <- smooth_data %>% 
+  filter(Country == "Germany", Date_reported <= ("2020-08-31")) %>% 
+  pivot_longer(cols = c("New_cases_smooth3", "New_cases_smooth7", "New_cases_smooth10"), 
+               names_to = "Type",
+               values_to = "Count")
+
+ggplot(data = smooth_data1, aes(x = Date_reported, y = Count, color = Type)) +
+  geom_line(linewidth = 0.5) +
+  labs(
+    title = "Smoothed Daily COVID-19 Cases in Germany",
+    x = "",
+    y = "Smoothed Cases",
+    color = "Smoothing Window"
+  ) +
+  theme_minimal() +
+  scale_x_date(labels = scales::date_format("%b %y"), breaks = scales::breaks_width("1 month")) +
+  facet_wrap(~Type, scales = "free_y", nrow = 3) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::label_comma()) 
+```
+
+In this case, **the 7-day smoothing window** appears to provide **the best balance between smoothing the data and capturing the underlying trend**. Although we generally expect that a larger smoothing window (more days averaged) would result in a smoother curve, the choice of an excessively large window may oversmooth the data, potentially obscuring important short-term fluctuations.
+
+**The 3-day window** captures more short-term variability, making it sensitive to daily fluctuations and noise. On the other hand, **the 10-day window** smooths the data too much, potentially losing some of the nuances in the trend.
+
+**The 7-day window strikes a good compromise**, effectively smoothing out noise while still preserving the essential features of the trend. It provides a clearer representation of the overall pattern in COVID-19 cases, showing the surge in March 2020 and the subsequent gradual decline in April 2020.
+
+The key is finding a balance that minimizes noise without sacrificing the ability to capture meaningful variations in the data. In this context, the 7-day smoothing window achieves this balance for visualizing the COVID-19 cases trend in Germany.
+
+## How Do Deaths Follow Cases?
+
+### The correlation between Covid-19 deaths and cases during the first and second waves in Germany
+
+In this part, I delve into the relationship between COVID-19 cases and deaths in Germany, specifically in the second half of March 2020. The goal is to visually depict the correlation between 'shiftscale_cases' and 'New_deaths_smooth7', providing insights into their dynamic relationship during the period of escalating cases.
+
+```{r}
+#| label: deathfollowcases-germany1
+#| echo: false
+smooth_data1 <- smooth_data %>%
+  filter(Country == "Germany" & Date_reported <= as.Date("2020-08-31")) %>%
+  mutate(
+    shiftscale_cases = shiftscale(na.omit(New_cases_smooth7), shift = 7, scale = 0.0683),
+    New_deaths_smooth7 = na.omit(New_deaths_smooth7)
+  )
+
+ggplot(smooth_data1, aes(x = Date_reported)) +
+  geom_line(aes(y = shiftscale_cases, color = "shiftscale_cases"), linewidth = 0.5) +
+  geom_line(aes(y = New_deaths_smooth7, color = "New_deaths_smooth7"), linewidth = 0.5) +
+  labs(
+    title = "The correlation between Covid-19 deaths and cases during the first wave in Germany",
+    x = "",
+    y = "Number of Cases/Deaths",
+    color = "Variable"
+  ) +
+  theme_minimal() +
+  scale_x_date(labels = scales::date_format("%b %y"), breaks = scales::breaks_width("1 month")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::label_comma()) +
+  scale_color_manual(values = c("shiftscale_cases" = "blue", "New_deaths_smooth7" = "red"))
+```
+
+As you can see the comparison of 'shiftscale_cases' and 'New_deaths_smooth7', the best parameters that I used for **shifting with 7** and **scaling with 0.0683** because it can reach the best overlap of both line graphs during the mid of March 2020.
+
+The overlap in the exponential growth phase, particularly during the second half of March 2020, is visually assessed as **a good fit** between 'shiftscale_cases' and 'New_deaths_smooth7' time series.
+
+Understanding **the relation between deaths and cases in the context of COVID-19** can be summarized as follows:
+
+-   **A shift parameter of 7 days** implies a delay between the highest points of new cases and subsequent new deaths.
+
+-   **The scale parameter of 0.0683** represents a scaling factor, indicating that the adjusted magnitude of new cases is reduced to align more effectively with the magnitude of new deaths.
+
+The second visualization, covering the time from **July to December 2020 in Germany**, reveals a shift in the dynamics between cases and deaths compared to the first wave. Here is how I can interpret and conclude based on the observations
+
+```{r}
+#| label: deathfollowcases-germany2
+#| echo: false
+smooth_data1 <- smooth_data %>%
+  filter(Country == "Germany" & Date_reported >= as.Date("2020-07-01") & Date_reported <= as.Date("2020-12-31")) %>%
+  mutate(
+    shiftscale_cases = shiftscale(na.omit(New_cases_smooth7), shift = 5, scale = 0.06),
+    New_deaths_smooth7 = na.omit(New_deaths_smooth7)
+  )
+
+ggplot(smooth_data1, aes(x = Date_reported)) +
+  geom_line(aes(y = shiftscale_cases, color = "shiftscale_cases"), linewidth = 0.5) +
+  geom_line(aes(y = New_deaths_smooth7, color = "New_deaths_smooth7"), linewidth = 0.5) +
+  labs(
+    title = "The dynamics between cases and deaths during the second wave in Germany",
+    x = "",
+    y = "Number of Cases/Deaths",
+    color = "Variable"
+  ) +
+  theme_minimal() +
+  scale_x_date(labels = scales::date_format("%b %y"), breaks = scales::breaks_width("1 month")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::label_comma()) +
+  scale_color_manual(values = c("shiftscale_cases" = "blue", "New_deaths_smooth7" = "red"))
+```
+
+For the second visualization, I still use the same parameters for shifting (5) and scaling (0.06) to see the pattern of the observations between deaths and cases from the second wave during July-December 2020. As you can see, the graph shows that the two time series, 'shiftscale_cases' and 'New_deaths_smooth7', **do not overlap** during the second wave, indicating a change in the relationship between cases and deaths. Despite an increase in cases, the number of deaths does not follow a proportional increase. Instead, deaths show a decrease, and the gap between the two line graphs widens, especially since October 2020.
+
+From my perspective, there are several influential factors that changed the dynamic between cases and deaths in the second wave.
+
+-   **Improved Healthcare Response:** The non-overlapping trend implies a potential improvement in the healthcare response during the second wave. It indicates that, even with a spike in cases, the healthcare system may have become more effective in managing severe cases and reducing mortality.
+
+-   **Changing Demographics:** Another factor could be a shift in the demographics of individuals getting infected. If the majority of new cases are among younger and healthier individuals, the likelihood of severe outcomes and deaths may decrease.
+
+In summary, the widening gap between cases and deaths in the second wave, despite an increase in cases, suggests a positive shift in the COVID-19 situation. This could be attributed to various factors, including improved medical interventions, changes in demographics, or other public health measures. Overall, the non-overlapping trend in the second wave indicates a different pattern in the relationship between cases and deaths, reflecting the evolving understanding and management of the COVID-19 pandemic over time.
+
+### The correlation between Covid-19 deaths and cases during the first wave in Italy (Bonus Analysis 1)
+
+```{r}
+#| label: deathfollowcases-italy1
+#| echo: false
+smooth_data2 <- smooth_data %>%
+  filter(Country == "Italy" & Date_reported <= as.Date("2020-08-31")) %>%
+  mutate(
+    shiftscale_cases = shiftscale(na.omit(New_cases_smooth7), shift = 4, scale = 0.14),
+    New_deaths_smooth7 = na.omit(New_deaths_smooth7)
+  )
+
+ggplot(smooth_data2, aes(x = Date_reported)) +
+  geom_line(aes(y = shiftscale_cases, color = "shiftscale_cases"), linewidth = 0.5) +
+  geom_line(aes(y = New_deaths_smooth7, color = "New_deaths_smooth7"), linewidth = 0.5) +
+  labs(
+    title = "The correlation between Covid-19 deaths and cases during the first wave in Italy",
+    x = "",
+    y = "Count",
+    color = "Variable"
+  ) +
+  theme_minimal() +
+  scale_x_date(labels = scales::date_format("%b %y"), breaks = scales::breaks_width("1 month")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::label_comma()) +
+  scale_color_manual(values = c("shiftscale_cases" = "blue", "New_deaths_smooth7" = "red"))
+```
+
+### The correlation between Covid-19 deaths and cases during the first wave in the United Kingdom (Bonus Analysis 2)
+
+```{r}
+#| label: deathfollowcases-uk1
+#| echo: false
+smooth_data3 <- smooth_data %>%
+  filter(Country == "The United Kingdom" & Date_reported <= as.Date("2020-08-31")) %>%
+  mutate(
+    shiftscale_cases = shiftscale(na.omit(New_cases_smooth7), shift = 4, scale = 0.2),
+    New_deaths_smooth7 = na.omit(New_deaths_smooth7)
+  )
+
+ggplot(smooth_data3, aes(x = Date_reported)) +
+  geom_line(aes(y = shiftscale_cases, color = "shiftscale_cases"), linewidth = 0.5) +
+  geom_line(aes(y = New_deaths_smooth7, color = "New_deaths_smooth7"), linewidth = 0.5) +
+  labs(
+    title = "The correlation between Covid-19 deaths and cases during the first wave in the UK",
+    x = "",
+    y = "Count",
+    color = "Variable"
+  ) +
+  theme_minimal() +
+  scale_x_date(labels = scales::date_format("%b %y"), breaks = scales::breaks_width("1 month")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::label_comma()) +
+  scale_color_manual(values = c("shiftscale_cases" = "blue", "New_deaths_smooth7" = "red"))
+```
+
+As you can see, the parameters used for Italy and the United Kingdom differ slightly from those identified for Germany. For Italy, the optimal parameters for the shift and scale (4 and 0.14, respectively) were chosen to achieve the best overlap during the exponential growth phase in the first wave. Similarly, for the United Kingdom, the parameters selected were a shift of 4 days and a scale of 0.2. These differences could reflect variations in the pandemic's dynamics and healthcare responses across countries. The parameters are not directly transferable between countries due to the unique circumstances and strategies implemented by each country in response to the pandemic.
+
+## When Does the Wave Break?
+
+```{r}
+#| label: thewavebreak
+#| echo: false
+filtered_data <- subset(smooth_data, Country == "Germany" & Date_reported >= as.Date("2020-03-01") & Date_reported <= as.Date("2020-04-15"))
+
+# Compute the smoothed new cases and its derivative
+filtered_data <- filtered_data %>%
+  mutate(
+    Diff_cases_smooth7 = New_cases_smooth7 - lag(New_cases_smooth7, n = 1, default = 0)
+  ) %>% 
+  pivot_longer(cols = c("Diff_cases_smooth7", "New_cases_smooth7"),
+               names_to = "Type",
+               values_to = "Count") 
+
+# Visualization
+ggplot(filtered_data, aes(x = Date_reported, y = Count, color = Type)) +
+  geom_line(linewidth = 0.5) +
+  labs(
+    title = "Smoothed New Cases and Derivative",
+    x = "",
+    y = "Count",
+    color = "Variable"
+  ) +
+  theme_minimal() +
+  scale_x_date(labels = scales::date_format("%b %d"), breaks = scales::breaks_width("2 days")) +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1)) +
+  scale_y_continuous(labels = scales::label_comma()) +
+  scale_color_manual(values = c("blue", "red")) +
+  facet_wrap(~Type, scales = "free_y", nrow = 2)  # Separate y-axes for the two panels
+
+# Find the day of the peak for daily differences
+#filtered_data %>%
+  #filter(Diff_cases_smooth7 == max(Diff_cases_smooth7)) %>%
+  #pull(Date_reported)
+
+# Find the day of the peak for smoothed new cases
+#filtered_data %>%
+  #filter(New_cases_smooth7 == max(New_cases_smooth7)) %>%
+  #pull(Date_reported)
+```
+
+The visualization illustrates the evolution of **smoothed new cases** ***(solid blue line)*** and their **derivative** ***(solid red line)*** for Germany between March 1, 2020, and April 15, 2020. **The peak in smoothed new cases** occurred on ***April 4, 2020***, while **the peak in the derivative**, indicating the most significant change in new cases, was observed on ***March 20, 2020***. This suggests that the peak in new cases preceded the peak in the rate of change, potentially signaling the turning point or break in the pandemic wave.
+
+# World Development Indicators
+
+The World Bank Development Indicators (WDI) dataset comprises essential socio-economic metrics for a multitude of countries worldwide, offering a comprehensive overview of global economic and social trends. This data is sourced from the WDI dataset, providing a foundation for in-depth exploration and analysis.
+
+## Correlation Matrix Analysis
+
+In this stage, I create a correlation matrix plot for the numerical indicators in the WDI dataset. I explore the correlations between different indicators, aiming to identify variables that may essentially represent significant correlations within the dataset.
+
+```{r}
+#| label: correlation-matrix
+#| echo: false
+numeric_wdi <- wdi %>% 
+  select_if(is.numeric) %>%  
+  cor(use = "pairwise.complete.obs") %>% 
+  corrplot(
+    method = "color", 
+    addCoef.col = "black", 
+    tl.col = "black", 
+    number.cex = 0.6, 
+    tl.cex = 0.6, 
+    col = viridis::viridis(100, option = "C")
+  )
+
+```
+
+In the correlation matrix, we can observe strong positive correlations between "physician_per_1000" (Physicians per 1,000 people) and "pop_older65" (Population ages 65 and above), indicating that countries with more elderly individuals tend to have a higher physician availability, possibly due to increased healthcare demand, better healthcare infrastructure, or higher economic development. "Life_expectancy" and "physicians_per_1000" show a positive correlation, suggesting that countries with more physicians per 1,000 people tend to experience better healthcare outcomes, contributing to an associated increase in life expectancy. Notably, the positive correlation between "gdp_per_capita" and "life_expectancy" suggests that regions with higher economic prosperity tend to have longer life expectancy. This indicates a potential link between economic well-being and improved health outcomes.
+
+However, we can also notice strong negative correlations between "urban_pop" (Urban Population) and "rural_pop" (Rural Population), suggesting that an inverse relationship. In simpler terms, as urban population increases, there tends to be a decrease in rural population, and vice versa. This could reflect a trend where people are migrating from rural to urban areas or vice versa, impacting the distribution of population between these two categories.
+
+Describe some interesting correlations. There are two variables which are essentially one, can you spot them in the correlation matrix? (Pending)
+
+## Principal Component Analysis (PCA)
+
+In preparation for Principal Component Analysis (PCA), it is necessary to remove missing values in the dataset. To facilitate a comparative analysis, two distinct data frames have been created. The first, `wdi_noNA_small`, involves the removal of countries with missing values, while the second, `wdi_noNA_large`, entails the exclusion of the two variables exhibiting the highest frequency of missing values.
+
+```{r}
+#| label: PCA-romoveNA
+#| echo: false
+# 1. Create a new data by removing the countries with NAs
+wdi_noNA_small <- na.omit(wdi)
+
+# 2.1 Check the two variables with the most NA's
+#summary(wdi)
+
+# 2.2 Remove NA's in "pop_lower_half_median" and "gdp_per_capita" variables and then remove the countries with NAs from the `country` column 
+wdi_no_vars <- wdi[, setdiff(names(wdi), c("pop_lower_half_median", "gdp_per_capita"))]
+
+# Remove countries with remaining NA's
+wdi_noNA_large <- na.omit(wdi_no_vars)
+```
+
+In the small data frame `wdi_noNA_small`, there are `r nrow(wdi_noNA_small)` countries, and in the large data frame `wdi_noNA_large`, there are `r nrow(wdi_noNA_large)` countries.
+
+Moreover, I also generate a table for the `wdi_noNA_small` dataframe listing countries present in the original `wdi` dataset but absent in `wdi_noNA_small`, while also considering countries with a population exceeding one million.
+
+```{r}
+#| label: tableforPCAsmall
+#| echo: false
+missing_countries_small <- wdi %>%
+  anti_join(wdi_noNA_small, by = "country") %>%
+  filter(pop > 1e6) %>%
+  select(country) %>%
+  knitr::kable(align = "c")
+
+missing_countries_small
+```
+
+Similarly, I construct a comparable table for the `wdi_noNA_large` dataframe to explore the presence or absence of larger countries in this modified dataset.
+
+```{r}
+#| label: tableforPCAlarge
+#| echo: false
+missing_countries_large <- wdi %>%
+  anti_join(wdi_noNA_large, by = "country") %>%
+  filter(pop > 1e6) %>%
+  select(country) %>%
+  knitr::kable(align = "c")
+
+missing_countries_large
+```
+
+As both tables shown above, you can see that large countries are missing in the `wdi_noNA_small` and `wdi_noNA_large` datasets. The removal of countries with missing values and those with the most missing variables has led to the exclusion of larger countries from the datasets. Specifically, in the case of `wdi_noNA_small`, the absence of countries like China and India suggests that eliminating countries with any missing values results in the exclusion of large-population countries. In `wdi_noNA_large`, the removal of variables with the most missing values precedes removing countries, leading to the exclusion of Kosovo, indicating that this approach also omits larger countries from the dataset. (have to check)
+
+### PCA small
+
+Now, using the wdi_noNA_small dataframe, I will prepare the data for a principal component analysis (PCA) to explore the explained variance, variable loadings from the rotation matrix, and the representation of countries in the coordinates of PC1 and PC2.
+
+#### Explained Variance from Small Data
+
+```{r}
+#| label: preparingdata-PCAsmall
+#| echo: false
+data_for_pca <- na.omit(wdi_noNA_small[, c("country", "iso3c", "region", "urban_pop", "rural_pop", "pop", "pop_density", "pop_older65", "pop_lower_half_median", "physicians_per_1000", "life_expectancy", "gdp_per_capita")])
+
+# Select relevant columns for PCA
+X <- data_for_pca[, c("urban_pop", "rural_pop", "pop", "pop_density", "pop_older65", "pop_lower_half_median", "physicians_per_1000", "life_expectancy", "gdp_per_capita")]
+
+# Standardize the data
+X_scaled <- scale(X)
+
+# Perform PCA
+pca_result <- prcomp(X_scaled)
+```
+
+```{r}
+#| label: explainedvariance-PCAsmall
+#| echo: false
+# Calculate explained variance
+variance_explained <- (pca_result$sdev^2) / sum(pca_result$sdev^2)
+
+# Create a data frame for plotting
+variance_data <- data.frame(
+  Principal_Component = paste("PC", 1:length(variance_explained)),
+  Variance_Explained = variance_explained
+)
+
+ggplot(variance_data, aes(x = Principal_Component, y = Variance_Explained)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Explained Variance for each Principal Component of the Small Data", 
+       x = "", 
+       y = "Percentage of Explained Variance") +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::percent_format(scale = 100), breaks = seq(0, 0.5, 0.1))
+```
+
+As you can see, the graph illustrates the variance explained by each principal component (PC1 to PC9) and it shows that **PC1 contributes the highest explained variance, approximately 48.74% of the total variance.** We could safely say that PC1 captures the most significant patterns in the data. Meanwhile, from PC2 to PC4 also contribute substantially to the overall variance, accounting for about 14.32%, 11.78%, and 10.30%, respectively. However, the subsequent PCs (PC5 to PC9) contribute decreasingly to the total variance and might capture more specific or less dominant patterns.
+
+In summary, the output suggests that a substantial portion of the variance in your data is explained by the first few principal components, particularly PC1-PC4. Further exploration of variable loadings on each principal component can provide deeper insights into the underlying patterns in the dataset.
+
+#### Rotation Matrix (Variable Loadings) from Small Data
+
+```{r}
+#| label: rotationmatrix-PCAsmall
+#| echo: false
+# Extract variable loadings for the first four principal components
+loadings <- pca_result$rotation[, 1:4]
+
+# Convert loadings to a data frame
+loadings_df <- as.data.frame(loadings)
+loadings_df$variable <- rownames(loadings_df)
+
+# Reshape data for facets
+loadings_df_long <- tidyr::gather(loadings_df, key = "PC", value = "Loading", -variable)
+
+ggplot(loadings_df_long, aes(x = Loading, y = variable, fill = variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Rotation Matrix (Variable Loadings) for Small Data from PC1-PC4", 
+       x = "Value", 
+       y = "Variable",
+       fill = "Variable") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(angle = 0, hjust = 1)) +
+  facet_wrap(~PC, scales = "free_x")
+```
+
+From the rotation matrix shown above, we can conclude as follows:
+
+**PC1**
+
+-   PC1 has positive loadings on the variables **rural_pop** and **pop_lower_half_median**, suggesting they strongly contribute to PC1. This component may represent a combination of factors related to rural population demographics and socio-economic status. However, the remaining variables have high negative loadings on PC1.
+
+-   PC1 could represent a socio-economic dimension, where regions with a higher rural population and a higher median income for the lower half of the population share similar characteristics. This could include aspects related to rural development, income distribution, or other socio-economic factors.
+
+**PC2**
+
+-   For PC2, **urban_pop** and **pop_lower_half_median** have higher loadings, indicating a focus on urbanization and socio-economic status in PC2.
+
+-   PC2 could represent a dimension that reflects the socio-economic characteristics of urban areas. Regions with higher urban populations and a higher median income for the lower half of the population may share similar characteristics related to urban development and economic well-being.
+
+#### Countries in the Coordinates of PC1 and PC2 from Small Data
+
+```{r}
+#| label: PC1PC2-PCAsmall
+#| echo: false
+pc_df <- as.data.frame(pca_result$x[, 1:2])
+pc_df$iso3c <- wdi_noNA_small$iso3c
+pc_df$region <- wdi_noNA_small$region
+
+ggplot(pc_df, aes(x = PC1, y = PC2, color = region, label = iso3c)) +
+  geom_text(size = 3) +
+  labs(title = "Countries in the Coordinates of PC1 and PC2 from Small Data", 
+       x = "PC1", 
+       y = "PC2") +
+  theme_minimal()
+```
+
+As the graph shown above, we can see that most countries from **Sub-Saharan Africa** such as ***Angola (AGO)***, ***South Sudan (SSD)***, and ***Chad (TCD)*** have higher positive values on PC1. As such, we can conclude that these countries tend to have larger rural populations and higher proportion of the population below the median. Meanwhile, they have lower physician density, lower life expectancy, and a lower percentage of the population aged 65 and above. On the other hand, we can that most countries from **Latin America & Caribbean** such as ***Brazil (BRA)***, ***Suriname (SUR)***, and ***Argentina (ARG)*** have higher positive values on PC2. Therefore, we can assume that those countries tend to have larger urban populations, higher proportion of the population below the median.
+
+On the contrary, some countries such as ***Albania (ALB)*** that have negative values on both PC1 and PC2, indicating it has characteristics opposite to those associated with higher positive values on these components.
+
+### PCA large
+
+Moving on to the `wdi_noNA_large` dataframe, I also conduct the same analysis as the small data on this large data as well.
+
+#### Explained Variance from Large Data
+
+```{r}
+#| label: PCAlarge
+#| echo: false
+data_for_pca2 <- na.omit(wdi_noNA_large[, c("country", "iso3c", "region", "urban_pop", "rural_pop", "pop", "pop_density", "pop_older65", "physicians_per_1000", "life_expectancy")])
+
+# Select relevant columns for PCA
+X2 <- data_for_pca2[, c("urban_pop", "rural_pop", "pop", "pop_density", "pop_older65", "physicians_per_1000", "life_expectancy")]
+
+# Standardize the data
+X2_scaled <- scale(X2)
+
+# Perform PCA
+pca_result2 <- prcomp(X2_scaled)
+```
+
+```{r}
+#| label: explainedvariance-PCAlarge
+#| echo: false
+# Calculate explained variance
+variance_explained2 <- (pca_result2$sdev^2) / sum(pca_result2$sdev^2)
+
+# Create a data frame for plotting
+variance_data2 <- data.frame(
+  Principal_Component2 = paste("PC", 1:length(variance_explained2)),
+  Variance_Explained2 = variance_explained2
+)
+
+ggplot(variance_data2, aes(x = Principal_Component2, y = Variance_Explained2)) +
+  geom_bar(stat = "identity", fill = "skyblue") +
+  labs(title = "Explained Variance for each Principal Component of the Large Data", 
+       x = "", 
+       y = "Percentage of Explained Variance") +
+  theme_minimal() +
+  scale_y_continuous(labels = scales::percent_format(scale = 100), breaks = seq(0, 0.5, 0.1))
+```
+
+As you can see, the graph illustrates the variance explained by each principal component (PC1 to PC7) and it shows that **PC1 contributes the highest explained variance, approximately 50.22% of the total variance in the large data.** We could safely say that PC1 captures the most significant patterns in the data. Meanwhile, from PC2 to PC4 also contribute significantly to the overall variance, accounting for about 15.66%, 14.23%, and 12.69%, respectively. However, the subsequent PCs (PC5 to PC7) with low variance explained may not contribute substantially to understanding the variability in this data and we could consider them as noise or measurement error.
+
+#### Rotation Matrix (Variable Loadings) from Large Data
+
+```{r}
+#| label: rotationmatrix-PCAlarge
+#| echo: false
+# Extract variable loadings for the first four principal components
+loadings2 <- pca_result2$rotation[, 1:4]
+
+# Convert loadings to a data frame
+loadings_df2 <- as.data.frame(loadings2)
+loadings_df2$variable <- rownames(loadings_df2)
+
+# Reshape data for facets
+loadings_df_long2 <- tidyr::gather(loadings_df2, key = "PC", value = "Loading", -variable)
+
+# Plot variable loadings with facets
+ggplot(loadings_df_long2, aes(x = Loading, y = variable, fill = variable)) +
+  geom_bar(stat = "identity", position = "dodge") +
+  labs(title = "Rotation Matrix (Variable Loadings) for Large Data from PC1-PC4", 
+       x = "Value", 
+       y = "Variable") +
+  theme_minimal() +
+  theme(axis.text.y = element_text(angle = 0, hjust = 1)) +
+  facet_wrap(~PC, scales = "free_x")
+```
+
+From the rotation matrix shown above, we can conclude as follows:
+
+**PC1**
+
+-   Most variables have high positive loadings on PC1, except **rural_pop** and **pop**, suggesting they strongly contribute to PC1.
+
+-   PC1 seems to capture a set of characteristics associated with urbanization, lower rural population, lower overall population, higher population density, an aging population, higher physician density, and better life expectancy.
+
+**PC2**
+
+-   For PC2, **urban_pop** and **pop_density** have higher positive loadings, indicating that PC2 could represent a dimension that reflects the population density of urban areas.
+
+-   PC2 seems to capture a set of characteristics associated with urbanization, lower rural population, lower overall population, higher population density, a younger population, lower physician density, and potentially lower life expectancy.
+
+#### Countries in the Coordinates of PC1 and PC2 from Large Data
+
+```{r}
+#| label: PC1PC2-PCAlarge
+#| echo: false
+pc_df2 <- as.data.frame(pca_result2$x[, 1:2])
+pc_df2$iso3c <- wdi_noNA_large$iso3c
+pc_df2$region <- wdi_noNA_large$region
+
+ggplot(pc_df2, aes(x = PC1, y = PC2, color = region, label = iso3c)) +
+  geom_text(size = 3) +
+  labs(title = "Countries in the Coordinates of PC1 and PC2 from Large Data", 
+       x = "PC1", 
+       y = "PC2") +
+  theme_minimal()
+```
+
+As the graph shown above, we can see that some countries from **East Asia & Pacific** such as ***Macao SAR, China (MAC)***, ***Singapore (SGP)***, and ***Hongkong (HKG)*** have higher positive values on both PC1 and PC2.
+
+Since PC1 is associated with urbanization, higher physician density, and longer life expectancy, the higher positive values on PC1 for these countries suggest that they have a high degree of urbanization, a relatively higher density of physicians per 1000 people, and longer life expectancy.
+
+For PC2, which contrasts population density and the percentage of the population over 65, the higher positive values for these countries indicate that they have both higher population density and a lower percentage of the population over 65.
+
+In summary, these East Asian & Pacific countries seem to stand out for having characteristics of both urbanization, higher physician density, longer life expectancy (PC1), and higher population density with a lower percentage of the population over 65 (PC2). This interpretation aligns with the known characteristics of highly developed and urbanized regions with strong healthcare systems.
